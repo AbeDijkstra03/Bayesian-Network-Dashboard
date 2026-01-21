@@ -515,8 +515,7 @@ with st.expander("📝 Advanced: Edit CPTs Manually"):
         # Editable table
         edited_df = st.data_editor(
             display_df, 
-            key=f"editor_{edit_node}",
-            use_container_width=True
+            key=f"editor_{edit_node}"
         )
         
         # Check for unsaved changes AND validate column sums automatically

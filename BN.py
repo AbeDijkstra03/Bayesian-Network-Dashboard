@@ -165,7 +165,12 @@ def cpd_to_dataframe(cpd, states):
         evidence_card = cpd.cardinality[1:]
         parent_states = [cpd.state_names[p] for p in parents]
         combinations = list(itertools.product(*parent_states))
-        cols = [str(c).replace("'", "").replace("(", "").replace(")", "").replace(", ", "|") for c in combinations]
+        cols = []
+        for c in combinations:
+            if len(c) == 1:
+                cols.append(str(c[0]))  # Just use the single value
+            else:
+                cols.append(str(c).replace("'", "").replace("(", "").replace(")", "").replace(", ", "|"))
         df = pd.DataFrame(values, index=states, columns=cols)
     
     return df
@@ -514,7 +519,7 @@ with st.expander("📝 Advanced: Edit CPTs Manually"):
             use_container_width=True
         )
         
-        # Check for unsaved changes
+        # Check for unsaved changes AND validate column sums automatically
         try:
             if display_format == "Fractions":
                 from fractions import Fraction
@@ -527,12 +532,30 @@ with st.expander("📝 Advanced: Edit CPTs Manually"):
             # Compare with small tolerance for floating point comparison
             has_changes = not np.allclose(edited_decimal_df.values, original_df.values, rtol=1e-12)
             
+            # Check column sums automatically
+            sums = edited_decimal_df.sum(axis=0)
+            tolerance = 1e-9
+            
+            invalid_cols = []
+            for col_name, sum_val in zip(edited_decimal_df.columns, sums.values):
+                if abs(sum_val - 1.0) > tolerance:
+                    invalid_cols.append((col_name, sum_val))
+            
+            # Show appropriate messages
             if has_changes:
-                st.warning("⚠️ **You have unsaved changes!** Click 'Save CPT' to apply them.")
-        except:
-            pass  # If comparison fails, just don't show the warning
+                st.warning("⚠️ **You have unsaved changes!**")
+            
+            if invalid_cols:
+                for col_name, sum_val in invalid_cols:
+                    error = sum_val - 1.0
+                    st.error(f"❌ **Columns don't sum to 1.0:** \n\n {col_name}: {sum_val:.15f}")
+            else:
+                st.success("✅ **All columns sum to 1.0**")
+                
+        except Exception as e:
+            st.warning(f"Unable to validate: {e}")
         
-        col1, col2, col3 = st.columns([1, 1, 1])
+        col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("💾 Save CPT", key=f"save_{edit_node}"):
                 # Convert back to decimals if needed
@@ -555,11 +578,7 @@ with st.expander("📝 Advanced: Edit CPTs Manually"):
                             invalid_cols.append((col_name, sum_val))
                     
                     if invalid_cols:
-                        error_msg = f"❌ Columns don't sum to exactly 1.0 (tolerance: ±{tolerance}):\n"
-                        for col_name, sum_val in invalid_cols:
-                            error = sum_val - 1.0
-                            error_msg += f"  - **{col_name}**: {sum_val:.15f} (error: {error:+.15f})\n"
-                        error_msg += "\n💡 Tip: Use fractions for exact values (e.g., 1/200000)"
+                        error_msg = "❌ Cannot save: Columns don't sum to exactly 1.0"
                         st.session_state['cpt_save_message'] = ('error', error_msg)
                     else:
                         success, msg = update_cpd_from_df(edit_node, decimal_df, node_states[edit_node], node_states)
@@ -578,41 +597,56 @@ with st.expander("📝 Advanced: Edit CPTs Manually"):
         
         with col2:
             if st.button("🔄 Reset to Default", key=f"reset_{edit_node}"):
+                # Remove from edited_cpds
                 if edit_node in st.session_state.get('edited_cpds', {}):
                     del st.session_state['edited_cpds'][edit_node]
+                
                 # Clear the original values so it resets on next load
                 if original_key in st.session_state['cpt_original_values']:
                     del st.session_state['cpt_original_values'][original_key]
-                st.session_state['cpt_save_message'] = ('success', "🔄 Reset to default values!")
+                
+                # Recreate the default CPD based on the node
+                if edit_node == 'Guilty':
+                    cpd_default = TabularCPD(
+                        variable='Guilty', variable_card=2,
+                        values=[[1 - PRIOR_GUILTY], [PRIOR_GUILTY]],
+                        state_names=node_states
+                    )
+                elif edit_node == 'Alibi':
+                    cpd_default = TabularCPD(
+                        variable='Alibi', variable_card=2,
+                        values=[
+                            [0.50, 0.75],
+                            [0.50, 0.25]
+                        ],
+                        evidence=['Guilty'], evidence_card=[2],
+                        state_names=node_states
+                    )
+                elif edit_node == 'Desc_Match':
+                    cpd_default = TabularCPD(
+                        variable='Desc_Match', variable_card=2,
+                        values=[
+                            [0.90, 0.10],
+                            [0.10, 0.90]
+                        ],
+                        evidence=['Guilty'], evidence_card=[2],
+                        state_names=node_states
+                    )
+                elif edit_node == 'DNA_Match':
+                    cpd_default = TabularCPD(
+                        variable='DNA_Match', variable_card=2,
+                        values=[
+                            [1 - p_match_given_innocent, 0.0],
+                            [p_match_given_innocent, 1.0]
+                        ],
+                        evidence=['Guilty'], evidence_card=[2],
+                        state_names=node_states
+                    )
+                
+                # Update the model with default CPD
+                model.remove_cpds(edit_node)
+                model.add_cpds(cpd_default)
+                st.session_state['cpds'][edit_node] = cpd_default
+                
+                st.session_state['cpt_save_message'] = ('success', f"🔄 Reset {edit_node} to default values!")
                 st.rerun()
-        
-        with col3:
-            # Show column sums for verification
-            if st.button("📊 Check Column Sums", key=f"check_{edit_node}"):
-                try:
-                    if display_format == "Fractions":
-                        from fractions import Fraction
-                        decimal_df = edited_df.map(lambda x: float(Fraction(x)))
-                    else:
-                        decimal_df = edited_df.map(lambda x: float(x))
-                    
-                    sums = decimal_df.sum(axis=0)
-                    tolerance = 1e-9
-                    
-                    st.write("**Column Sums:**")
-                    all_valid = True
-                    for col_name, sum_val in zip(decimal_df.columns, sums.values):
-                        error = sum_val - 1.0
-                        if abs(error) <= tolerance:
-                            st.success(f"✓ {col_name}: {sum_val:.15f}")
-                        else:
-                            st.error(f"✗ {col_name}: {sum_val:.15f} (error: {error:+.15f})")
-                            all_valid = False
-                    
-                    if all_valid:
-                        st.success("✅ All columns sum to 1.0!")
-                    else:
-                        st.error("❌ Some columns don't sum to 1.0")
-                        
-                except ValueError as e:
-                    st.error(f"❌ Invalid format: {e}")

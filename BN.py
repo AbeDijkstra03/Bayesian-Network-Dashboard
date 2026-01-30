@@ -8,6 +8,7 @@ import numpy as np
 from pgmpy.models import DiscreteBayesianNetwork as BayesianNetwork
 from pgmpy.factors.discrete import TabularCPD
 from pgmpy.inference import VariableElimination
+from bn_utils import create_guilty_cpd, update_model_guilty_cpd
 
 # ==========================================
 # CONFIGURATION & CONSTANTS
@@ -37,6 +38,17 @@ lab_error_rate = st.sidebar.slider(
 
 # Total Probability of Match | Innocent = Random Match + Lab Error
 p_match_given_innocent = RMP + lab_error_rate
+
+# Prior probability slider (allows changing the Guilty prior from 1/200,000 up to 1/1,000)
+prior_prob = st.sidebar.slider(
+    "Prior P(Guilty)",
+    min_value=PRIOR_GUILTY,
+    max_value=1/1000,
+    value=PRIOR_GUILTY,
+    step=1e-6,
+    format="%.6f",
+    help="Prior probability that the suspect is guilty (used to set the 'Guilty' CPT)."
+)
 
 # ==========================================
 # SESSION STATE MANAGEMENT
@@ -68,12 +80,8 @@ if 'cpt_original_values' not in st.session_state:
     # 3. Define Conditional Probability Distributions (CPDs)
     
     # Node: Guilty (Prior)
-    # P(Guilty) = 1/200,000
-    cpd_guilty = TabularCPD(
-        variable='Guilty', variable_card=2,
-        values=[[1 - PRIOR_GUILTY], [PRIOR_GUILTY]],
-        state_names=state_map
-    )
+    # Prior set by `prior_prob` slider
+    cpd_guilty = create_guilty_cpd(prior_prob, state_map)
 
     # Node: Alibi
     # P(Alibi|Innocent) = 0.50, P(Alibi|Guilty) = 0.25
@@ -144,6 +152,10 @@ if 'DNA_Match' not in st.session_state.get('edited_cpds', {}):
     model.remove_cpds('DNA_Match')
     model.add_cpds(cpd_dna_new)
     st.session_state['cpds']['DNA_Match'] = cpd_dna_new
+
+# --- DYNAMIC UPDATE OF GUILTY CPT BASED ON PRIOR SLIDER ---
+# Use helper so behavior matches DNA slider logic and is testable
+update_model_guilty_cpd(model, prior_prob, node_states, cpds_dict=st.session_state.get('cpds'), edited_cpds=st.session_state.get('edited_cpds'))
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -453,7 +465,7 @@ if st.button("Calculate Probability of Guilt"):
             st.warning("Verdict: Inconclusive")
             
         st.markdown("---")
-        st.markdown(f"**Current Parameters:**\n- Lab Error Rate: `{lab_error_rate:.4f}`\n- Prior (Random Person): `1/200,000`")
+        st.markdown(f"**Current Parameters:**\n- Lab Error Rate: `{lab_error_rate:.4f}`\n- Prior (Random Person): `{prior_prob:.6f}`")
         
     except Exception as e:
         st.error(f"Inference Failed: {e}")
@@ -608,7 +620,7 @@ with st.expander("📝 Advanced: Edit CPTs Manually"):
                 if edit_node == 'Guilty':
                     cpd_default = TabularCPD(
                         variable='Guilty', variable_card=2,
-                        values=[[1 - PRIOR_GUILTY], [PRIOR_GUILTY]],
+                        values=[[1 - prior_prob], [prior_prob]],
                         state_names=node_states
                     )
                 elif edit_node == 'Alibi':
